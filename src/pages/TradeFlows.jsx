@@ -424,6 +424,11 @@ export default function TradeFlows() {
                     <span><span style={{ color: hs.color }}>HS {code}</span> · {hs.name}</span>
                     <span className="text-slate-400">Global Total: {fmtUSD(grandTotal)}</span>
                   </div>
+                  {hs.note && (
+                    <div className="px-3 py-1.5 text-[10px] text-amber-400/80 bg-amber-500/5 border-b border-slate-700/30">
+                      ℹ {hs.note}
+                    </div>
+                  )}
                   <div className="overflow-x-auto">
                     <table className="w-full text-[11px]">
                       <thead>
@@ -432,7 +437,7 @@ export default function TradeFlows() {
                           <th className="text-left px-3 py-2">Importing Market</th>
                           <th className="text-left px-3 py-2">Total Imports</th>
                           <th className="text-left px-3 py-2">Volume</th>
-                          <th className="text-left px-3 py-2">Avg Price</th>
+                          <th className="text-left px-3 py-2">Avg Trade Price*</th>
                           <th className="text-left px-3 py-2">Top Supplier</th>
                           <th className="text-left px-3 py-2">India Share</th>
                           <th className="text-left px-3 py-2">Share</th>
@@ -478,6 +483,11 @@ export default function TradeFlows() {
                 </div>
               );
             })}
+            <p className="text-[9px] text-slate-500 mt-1 mb-4 italic">
+              * Avg Trade Price = total declared value ÷ total net weight. This is a customs-weighted average across ALL grades within the HS code.
+              For codes covering multiple product types (e.g. HS 283526 includes cheap DCP + expensive HAp), the average is dominated by the bulk commodity.
+              Use the Pricing tab for grade-specific market prices.
+            </p>
 
             {/* ── PER-MARKET DETAILED BREAKDOWN ── */}
             {Object.entries(tradeData.markets || {}).map(([marketCode, hsData]) => {
@@ -500,6 +510,11 @@ export default function TradeFlows() {
                           <span><span style={{ color: hs.color }}>HS {code}</span> · {hs.name}</span>
                           <span className="text-slate-400">Total: {fmtUSD(total)}</span>
                         </div>
+                        {hs.note && (
+                          <div className="px-3 py-1.5 text-[10px] text-amber-400/80 bg-amber-500/5 border-b border-slate-700/30">
+                            ℹ {hs.note}
+                          </div>
+                        )}
                         <DataTable columns={makeColumns(hs, total)} data={rows.slice(0, 10)} />
                       </div>
                     );
