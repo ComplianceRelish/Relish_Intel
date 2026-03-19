@@ -68,7 +68,7 @@ export default function TradeFlows() {
     addLog('Starting UN Comtrade v1 data pull...', 'info');
 
     const results = { cn: {}, in_: {}, ts: {}, monthly: {} };
-    const delay = 400;
+    const delay = 1200; // Respect Comtrade rate limits
     let detectedTier = null;
 
     for (const code of HS_CODE_LIST) {
@@ -143,10 +143,16 @@ export default function TradeFlows() {
       if (fetchMode === 'full' && TREND_CODES.includes(code)) {
         addLog(`  Monthly detail: ${hs.shortName} (2023–2024)...`);
         try {
-          const months = monthPeriods(2023, 2024);
-          const m = await fetchMonthlyData('156', code, 'M', months.join(','), '0');
-          results.monthly[code] = months.map((p) => {
-            const match = m.find((r) => String(r.period) === p);
+          // Batch months in groups of 12 to stay within Comtrade query limits
+          const months2023 = monthPeriods(2023, 2023);
+          const months2024 = monthPeriods(2024, 2024);
+          const m1 = await fetchMonthlyData('156', code, 'M', months2023.join(','), '0');
+          await new Promise((r) => setTimeout(r, delay));
+          const m2 = await fetchMonthlyData('156', code, 'M', months2024.join(','), '0');
+          const allMonthly = [...m1, ...m2];
+          const allPeriods = [...months2023, ...months2024];
+          results.monthly[code] = allPeriods.map((p) => {
+            const match = allMonthly.find((r) => String(r.period) === p);
             return {
               period: p,
               label: `${p.slice(0, 4)}-${p.slice(4)}`,

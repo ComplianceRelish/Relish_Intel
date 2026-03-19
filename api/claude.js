@@ -36,18 +36,25 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1500,
+        max_tokens: 4096,
         system:
           systemPrompt ||
-          'You are a trade data research assistant for Relish Group (India). Return ONLY valid JSON. No markdown, no backticks, no preamble.',
+          'You are a trade data research assistant for Relish Group (India). Provide accurate, current market data with sources and dates. Return ONLY valid JSON. No markdown, no backticks, no preamble.',
         messages: [{ role: 'user', content: prompt }],
-        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
       }),
     });
 
     if (!response.ok) {
       const errBody = await response.text();
       console.error(`Claude API error ${response.status}:`, errBody);
+      // Specific guidance for common errors
+      if (response.status === 401) {
+        return res.status(401).json({
+          error: 'Claude API authentication failed (401). Check that ANTHROPIC_API_KEY is valid and has credits.',
+          details: errBody,
+        });
+      }
       return res.status(response.status).json({
         error: `Claude API returned ${response.status}`,
         details: errBody,
