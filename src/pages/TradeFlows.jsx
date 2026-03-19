@@ -61,6 +61,7 @@ export default function TradeFlows() {
   const { tradeData, setTradeData, loading, setLoading, addLog } = useApp();
   const [fetchMode, setFetchMode] = useState('full');
   const [apiTier, setApiTier] = useState(null);
+  const [dataYear, setDataYear] = useState(null); // detected latest year
   const [selectedMarkets, setSelectedMarkets] = useState(
     IMPORT_MARKETS.map((m) => m.code)
   );
@@ -89,21 +90,46 @@ export default function TradeFlows() {
     }
 
     setLoading((p) => ({ ...p, trade: true }));
-    addLog('Starting UN Comtrade v1 data pull...', 'info');
+    addLog('Detecting latest available data year...', 'info');
 
     const results = { markets: {}, in_: {}, ts: {}, monthly: {} };
     const delay = 1500;
     let detectedTier = null;
 
+    // ── AUTO-DETECT latest available year ──
+    // Probe from current year backwards until we find data
+    const currentYear = new Date().getFullYear();
+    const probeCode = HS_CODE_LIST[0]; // use first HS code to detect
+    let bestYear = '2023'; // safe fallback
+    for (let yr = currentYear; yr >= currentYear - 3; yr--) {
+      try {
+        addLog(`  Probing ${yr}...`, 'info');
+        const probe = await fetchComtradeData('156', probeCode, 'M', null, String(yr));
+        const hasData = probe.some((r) => r.partnerCode !== 0 && r.primaryValue > 0);
+        if (hasData) {
+          bestYear = String(yr);
+          addLog(`  ✓ Found data for ${yr}!`, 'success');
+          break;
+        }
+        addLog(`  ${yr}: no data yet`, 'info');
+      } catch {
+        addLog(`  ${yr}: unavailable`, 'info');
+      }
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    setDataYear(bestYear);
+    results.dataYear = bestYear;
+    addLog(`Using ${bestYear} as latest available year`, 'success');
+
     // ── Fetch imports for ALL selected markets ──
     for (const market of IMPORT_MARKETS.filter((m) => selectedMarkets.includes(m.code))) {
       results.markets[market.code] = {};
-      addLog(`${market.flag} ${market.name} imports...`, 'info');
+      addLog(`${market.flag} ${market.name} imports (${bestYear})...`, 'info');
 
       for (const code of HS_CODE_LIST) {
         const hs = HS_CODES[code];
         try {
-          const d = await fetchComtradeData(market.code, code, 'M');
+          const d = await fetchComtradeData(market.code, code, 'M', null, bestYear);
           if (!detectedTier && d._tier) detectedTier = d._tier;
           results.markets[market.code][code] = d
             .filter((r) => r.partnerCode !== 0 && r.primaryValue > 0)
@@ -137,10 +163,10 @@ export default function TradeFlows() {
     }
 
     // ── India exports ──
-    addLog('🇮🇳 India exports...', 'info');
+    addLog(`🇮🇳 India exports (${bestYear})...`, 'info');
     for (const code of HS_CODE_LIST) {
       try {
-        const d2 = await fetchComtradeData('699', code, 'X');
+        const d2 = await fetchComtradeData('699', code, 'X', null, bestYear);
         results.in_[code] = d2
           .filter((r) => r.partnerCode !== 0 && r.primaryValue > 0)
           .sort((a, b) => b.primaryValue - a.primaryValue)
@@ -163,11 +189,14 @@ export default function TradeFlows() {
 
     // ── Annual trends (China baseline) ──
     if (TREND_CODES.length > 0) {
-      addLog('📈 Annual trends (2019–2024)...', 'info');
+      const trendEnd = parseInt(bestYear);
+      const trendStart = trendEnd - 5;
+      const trendYears = [];
+      for (let y = trendStart; y <= trendEnd; y++) trendYears.push(String(y));
+      addLog(`📈 Annual trends (${trendStart}–${trendEnd})...`, 'info');
       for (const code of TREND_CODES) {
         results.ts[code] = {};
         try {
-          const trendYears = ['2019', '2020', '2021', '2022', '2023', '2024'];
           const t = await fetchComtradeData('156', code, 'M', '0', trendYears.join(','));
           for (const yr of trendYears) {
             const match = t.find((r) => String(r.period) === yr);
@@ -175,7 +204,7 @@ export default function TradeFlows() {
           }
           addLog(`  ${HS_CODES[code].shortName}: loaded`, 'success');
         } catch {
-          for (const yr of ['2019', '2020', '2021', '2022', '2023', '2024']) {
+          for (const yr of trendYears) {
             results.ts[code][yr] = { value: 0, weight: 0 };
           }
         }
@@ -183,18 +212,21 @@ export default function TradeFlows() {
       }
     }
 
-    // ── Monthly granular ──
+    // ── Monthly granular (latest 24 months) ──
     if (fetchMode === 'full' && TREND_CODES.length > 0) {
-      addLog('📊 Monthly detail (2023–2024)...', 'info');
+      const byInt = parseInt(bestYear);
+      const monthYr1 = byInt - 1;
+      const monthYr2 = byInt;
+      addLog(`📊 Monthly detail (${monthYr1}–${monthYr2})...`, 'info');
       for (const code of TREND_CODES) {
         try {
-          const months2023 = monthPeriods(2023, 2023);
-          const months2024 = monthPeriods(2024, 2024);
-          const m1 = await fetchMonthlyData('156', code, 'M', months2023.join(','), '0');
+          const months1 = monthPeriods(monthYr1, monthYr1);
+          const months2 = monthPeriods(monthYr2, monthYr2);
+          const m1 = await fetchMonthlyData('156', code, 'M', months1.join(','), '0');
           await new Promise((r) => setTimeout(r, delay));
-          const m2 = await fetchMonthlyData('156', code, 'M', months2024.join(','), '0');
+          const m2 = await fetchMonthlyData('156', code, 'M', months2.join(','), '0');
           const allMonthly = [...m1, ...m2];
-          const allPeriods = [...months2023, ...months2024];
+          const allPeriods = [...months1, ...months2];
           results.monthly[code] = allPeriods.map((p) => {
             const match = allMonthly.find((r) => String(r.period) === p);
             return { period: p, label: `${p.slice(0, 4)}-${p.slice(4)}`, value: match?.primaryValue || 0, weight: match?.netWgt || 0 };
@@ -296,6 +328,11 @@ export default function TradeFlows() {
           <h2 className="text-lg font-semibold">Trade Flow Data</h2>
           <p className="text-xs text-slate-400 mt-1 flex items-center gap-2">
             Source: UN Comtrade v1 API · HS 6-digit · {selectedMarkets.length} markets
+            {dataYear && (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                📅 {dataYear} Data
+              </span>
+            )}
             {apiTier && (
               <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${
                 apiTier === 'premium' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
@@ -374,7 +411,7 @@ export default function TradeFlows() {
           <div>
             {/* ── GLOBAL OVERVIEW ── */}
             <h3 className="text-[13px] font-bold text-indigo-400 uppercase tracking-wider mb-3">
-              🌍 Global Import Overview — All Markets (2023)
+              🌍 Global Import Overview — All Markets ({tradeData.dataYear || dataYear || '?'})
             </h3>
             {HS_CODE_LIST.map((code) => {
               const rows = globalSummary[code];
@@ -451,7 +488,7 @@ export default function TradeFlows() {
               return (
                 <div key={marketCode}>
                   <h3 className="text-[13px] font-bold text-amber-500 uppercase tracking-wider mt-6 mb-3">
-                    {market.flag} {market.name} — Suppliers / Exporters (2023)
+                    {market.flag} {market.name} — Suppliers / Exporters ({tradeData.dataYear || dataYear || '?'})
                   </h3>
                   {Object.entries(hsData).map(([code, rows]) => {
                     if (!rows?.length) return null;
@@ -473,7 +510,7 @@ export default function TradeFlows() {
 
             {/* ── INDIA EXPORTS (Buyers) ── */}
             <h3 className="text-[13px] font-bold text-emerald-500 uppercase tracking-wider mt-6 mb-3">
-              🇮🇳 India Exports — Buyers by Destination (2023)
+              🇮🇳 India Exports — Buyers by Destination ({tradeData.dataYear || dataYear || '?'})
             </h3>
             {Object.entries(tradeData.in_ || {}).map(([code, rows]) => {
               if (!rows?.length) return null;
@@ -494,7 +531,7 @@ export default function TradeFlows() {
             {Object.keys(tradeData.ts || {}).length > 0 && (
               <>
                 <h3 className="text-[13px] font-bold text-purple-400 uppercase tracking-wider mt-6 mb-3">
-                  📈 China Import Trend — Annual (2019–2024)
+                  📈 China Import Trend — Annual ({(() => { const yrs = Object.keys(Object.values(tradeData.ts)[0] || {}); return yrs.length ? `${yrs[0]}–${yrs[yrs.length-1]}` : '?'; })()})
                 </h3>
                 {Object.entries(tradeData.ts).map(([code, years]) => {
                   const hs = HS_CODES[code];
@@ -533,7 +570,7 @@ export default function TradeFlows() {
             {Object.keys(tradeData.monthly || {}).length > 0 && (
               <>
                 <h3 className="text-[13px] font-bold text-indigo-400 uppercase tracking-wider mt-6 mb-3">
-                  📊 Monthly Import Volume — China (2023–2024)
+                  📊 Monthly Import Volume — China ({(() => { const by = parseInt(tradeData.dataYear || dataYear || 2024); return `${by-1}–${by}`; })()})
                 </h3>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                   {Object.entries(tradeData.monthly).map(([code, months]) => {
@@ -558,7 +595,12 @@ export default function TradeFlows() {
                         </div>
                         <div className="mt-2 mb-1"><Sparkline data={months} color={hs.color} height={50} /></div>
                         <div className="flex justify-between text-[8px] text-slate-600 px-0.5">
-                          <span>Jan 23</span><span>Jul 23</span><span>Jan 24</span><span>Jul 24</span><span>Dec 24</span>
+                          {months.length > 0 && (() => {
+                            const first = months[0]?.label || '';
+                            const last = months[months.length - 1]?.label || '';
+                            const mid = months[Math.floor(months.length / 2)]?.label || '';
+                            return <><span>{first}</span><span>{mid}</span><span>{last}</span></>;
+                          })()}
                         </div>
                         {peak && low && (
                           <div className="flex gap-3 mt-2 pt-2 border-t border-slate-700/50">

@@ -5,6 +5,9 @@
 
 const API = '/api';
 
+// Default to previous year (most likely to have complete data)
+const DEFAULT_PERIOD = String(new Date().getFullYear() - 1);
+
 // ── Comtrade v1 helpers ────────────────────────────────────
 
 /**
@@ -45,7 +48,7 @@ export async function fetchComtradeData(
   cmdCode,
   flowCode,
   partnerCode = null,
-  period = '2023',
+  period = DEFAULT_PERIOD,
   extra = {}
 ) {
   const opts = {
@@ -105,7 +108,7 @@ export async function fetchMonthlyData(
 /**
  * Fetch tariff-line level data.
  */
-export async function fetchTariffLine(reporterCode, cmdCode, flowCode, period = '2023', extra = {}) {
+export async function fetchTariffLine(reporterCode, cmdCode, flowCode, period = DEFAULT_PERIOD, extra = {}) {
   const json = await comtradeQuery({
     endpoint: 'getTariffline',
     typeCode: 'C',
@@ -124,7 +127,7 @@ export async function fetchTariffLine(reporterCode, cmdCode, flowCode, period = 
 /**
  * Fetch Standard Unit Values (price benchmarks).
  */
-export async function fetchSUV(cmdCode, flowCode, period = '2023', extra = {}) {
+export async function fetchSUV(cmdCode, flowCode, period = DEFAULT_PERIOD, extra = {}) {
   const json = await comtradeQuery({
     endpoint: 'getSUV',
     typeCode: 'C',
@@ -141,7 +144,7 @@ export async function fetchSUV(cmdCode, flowCode, period = '2023', extra = {}) {
 /**
  * Fetch bilateral Trade Matrix.
  */
-export async function fetchTradeMatrix(reporterCode, cmdCode, flowCode, period = '2023', extra = {}) {
+export async function fetchTradeMatrix(reporterCode, cmdCode, flowCode, period = DEFAULT_PERIOD, extra = {}) {
   const json = await comtradeQuery({
     endpoint: 'getTradeMatrix',
     typeCode: 'C',
