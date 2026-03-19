@@ -111,39 +111,102 @@ export default function TradeFlows() {
     let detectedTier = null;
 
     // ── AUTO-DETECT latest available year ──
-    // Probe from current year backwards until we find data
+    // Strategy: probe annual first, then fall back to monthly aggregation
+    // UN Comtrade annual data lags 6–12 months; monthly data lags only 2–3 months
     const currentYear = new Date().getFullYear();
-    const probeCode = HS_CODE_LIST[0]; // use first HS code to detect
-    let bestYear = '2023'; // safe fallback
+    const prevYear = currentYear - 1; // 2025 when it's 2026
+    const probeCode = HS_CODE_LIST[0];
+    let bestYear = String(currentYear - 2); // safe fallback (2024)
+    let useMonthlyAgg = false; // true = aggregate monthly data instead of annual
+
+    // 1. Probe annual data from current year backwards
     for (let yr = currentYear; yr >= currentYear - 3; yr--) {
       try {
-        addLog(`  Probing ${yr}...`, 'info');
+        addLog(`  Probing annual ${yr}...`, 'info');
         const probe = await fetchComtradeData('156', probeCode, 'M', null, String(yr));
         const hasData = probe.some((r) => r.partnerCode !== 0 && r.primaryValue > 0);
         if (hasData) {
           bestYear = String(yr);
-          addLog(`  ✓ Found data for ${yr}!`, 'success');
+          addLog(`  ✓ Found annual data for ${yr}!`, 'success');
           break;
         }
-        addLog(`  ${yr}: no data yet`, 'info');
+        addLog(`  ${yr}: no annual data yet`, 'info');
       } catch {
         addLog(`  ${yr}: unavailable`, 'info');
       }
       await new Promise((r) => setTimeout(r, delay));
     }
+
+    // 2. If best annual year is older than previous year, try monthly data for prevYear
+    if (parseInt(bestYear) < prevYear) {
+      addLog(`Annual ${prevYear} not available — checking monthly data...`, 'info');
+      try {
+        // Probe a recent month (e.g. September of prev year — should be available by March)
+        const probeMonth = `${prevYear}09`;
+        const mProbe = await fetchMonthlyData('156', probeCode, 'M', probeMonth, null);
+        const hasMonthly = mProbe.some((r) => r.partnerCode !== 0 && r.primaryValue > 0);
+        if (hasMonthly) {
+          bestYear = String(prevYear);
+          useMonthlyAgg = true;
+          addLog(`  ✓ Monthly data available for ${prevYear}! Will aggregate monthly records.`, 'success');
+        } else {
+          addLog(`  No monthly ${prevYear} data either — using annual ${bestYear}`, 'info');
+        }
+      } catch {
+        addLog(`  Monthly probe failed — using annual ${bestYear}`, 'info');
+      }
+      await new Promise((r) => setTimeout(r, delay));
+    }
+
     setDataYear(bestYear);
     results.dataYear = bestYear;
-    addLog(`Using ${bestYear} as latest available year`, 'success');
+    results.isMonthlyAgg = useMonthlyAgg;
+    addLog(`Using ${bestYear}${useMonthlyAgg ? ' (aggregated monthly)' : ' (annual)'} data`, 'success');
+
+    // ── Helper to aggregate monthly records into annual-like rows ──
+    function aggregateMonthly(monthlyRecords) {
+      const byPartner = {};
+      for (const r of monthlyRecords) {
+        if (r.partnerCode === 0 || !r.primaryValue) continue;
+        const key = String(r.partnerCode);
+        if (!byPartner[key]) {
+          byPartner[key] = {
+            partnerCode: r.partnerCode,
+            partnerDesc: r.partnerDesc,
+            primaryValue: 0,
+            netWgt: 0,
+            qty: 0,
+            monthCount: 0,
+          };
+        }
+        byPartner[key].primaryValue += r.primaryValue || 0;
+        byPartner[key].netWgt += r.netWgt || 0;
+        byPartner[key].qty += r.qty || 0;
+        byPartner[key].monthCount++;
+      }
+      return Object.values(byPartner).sort((a, b) => b.primaryValue - a.primaryValue);
+    }
+
+    // ── Helper to fetch data — annual or monthly-aggregated ──
+    async function fetchBestData(reporterCode, code, flowCode, partnerCode) {
+      if (!useMonthlyAgg) {
+        return fetchComtradeData(reporterCode, code, flowCode, partnerCode, bestYear);
+      }
+      // Fetch monthly data for all 12 months and aggregate
+      const periods = monthPeriods(parseInt(bestYear), parseInt(bestYear));
+      const raw = await fetchMonthlyData(reporterCode, code, flowCode, periods.join(','), partnerCode);
+      return aggregateMonthly(raw);
+    }
 
     // ── Fetch imports for ALL selected markets ──
     for (const market of IMPORT_MARKETS.filter((m) => selectedMarkets.includes(m.code))) {
       results.markets[market.code] = {};
-      addLog(`${market.flag} ${market.name} imports (${bestYear})...`, 'info');
+      addLog(`${market.flag} ${market.name} imports (${bestYear}${useMonthlyAgg ? ' monthly' : ''})...`, 'info');
 
       for (const code of HS_CODE_LIST) {
         const hs = HS_CODES[code];
         try {
-          const d = await fetchComtradeData(market.code, code, 'M', null, bestYear);
+          const d = await fetchBestData(market.code, code, 'M', null);
           if (!detectedTier && d._tier) detectedTier = d._tier;
           results.markets[market.code][code] = d
             .filter((r) => r.partnerCode !== 0 && r.primaryValue > 0)
@@ -177,10 +240,10 @@ export default function TradeFlows() {
     }
 
     // ── India exports ──
-    addLog(`🇮🇳 India exports (${bestYear})...`, 'info');
+    addLog(`🇮🇳 India exports (${bestYear}${useMonthlyAgg ? ' monthly' : ''})...`, 'info');
     for (const code of HS_CODE_LIST) {
       try {
-        const d2 = await fetchComtradeData('699', code, 'X', null, bestYear);
+        const d2 = await fetchBestData('699', code, 'X', null);
         results.in_[code] = d2
           .filter((r) => r.partnerCode !== 0 && r.primaryValue > 0)
           .sort((a, b) => b.primaryValue - a.primaryValue)
@@ -373,7 +436,7 @@ export default function TradeFlows() {
             Source: UN Comtrade v1 API · HS 6-digit · {selectedMarkets.length} markets
             {dataYear && (
               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                📅 {dataYear} Data
+                📅 {dataYear}{tradeData?.isMonthlyAgg ? ' (Monthly Agg.)' : ''} Data
               </span>
             )}
             {apiTier && (
@@ -454,7 +517,7 @@ export default function TradeFlows() {
           <div>
             {/* ── GLOBAL OVERVIEW ── */}
             <h3 className="text-[13px] font-bold text-indigo-400 uppercase tracking-wider mb-3">
-              🌍 Global Import Overview — All Markets ({tradeData.dataYear || dataYear || '?'})
+              🌍 Global Import Overview — All Markets ({tradeData.dataYear || dataYear || '?'}{tradeData?.isMonthlyAgg ? ' · Monthly Aggregated' : ''})
             </h3>
             {HS_CODE_LIST.map((code) => {
               const rows = globalSummary[code];
@@ -609,7 +672,7 @@ export default function TradeFlows() {
               return (
                 <div key={marketCode}>
                   <h3 className="text-[13px] font-bold text-amber-500 uppercase tracking-wider mt-6 mb-3">
-                    {market.flag} {market.name} — Suppliers / Exporters ({tradeData.dataYear || dataYear || '?'})
+                    {market.flag} {market.name} — Suppliers / Exporters ({tradeData.dataYear || dataYear || '?'}{tradeData?.isMonthlyAgg ? ' Monthly' : ''})
                   </h3>
                   {Object.entries(hsData).map(([code, rows]) => {
                     if (!rows?.length) return null;
@@ -670,7 +733,7 @@ export default function TradeFlows() {
 
             {/* ── INDIA EXPORTS (Buyers) ── */}
             <h3 className="text-[13px] font-bold text-emerald-500 uppercase tracking-wider mt-6 mb-3">
-              🇮🇳 India Exports — Buyers by Destination ({tradeData.dataYear || dataYear || '?'})
+              🇮🇳 India Exports — Buyers by Destination ({tradeData.dataYear || dataYear || '?'}{tradeData?.isMonthlyAgg ? ' Monthly' : ''})
             </h3>
             {Object.entries(tradeData.in_ || {}).map(([code, rows]) => {
               if (!rows?.length) return null;
