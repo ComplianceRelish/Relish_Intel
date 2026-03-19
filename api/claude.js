@@ -82,12 +82,20 @@ export default async function handler(req, res) {
     const data = await response.json();
     const text = data.content?.map((b) => b.text || '').filter(Boolean).join('\n') || '';
 
-    // Try to parse as JSON
+    // Robust JSON extraction — Claude often wraps JSON in preamble text
     let parsed = null;
-    try {
-      parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-    } catch {
-      // Not valid JSON — return as raw text
+    const cleaned = text.replace(/```json|```/g, '').trim();
+    // 1. Try direct parse
+    try { parsed = JSON.parse(cleaned); } catch { /* next */ }
+    // 2. Extract first JSON array [...] from mixed text
+    if (!parsed) {
+      const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+      if (arrMatch) try { parsed = JSON.parse(arrMatch[0]); } catch { /* next */ }
+    }
+    // 3. Extract first JSON object {...} from mixed text
+    if (!parsed) {
+      const objMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (objMatch) try { parsed = JSON.parse(objMatch[0]); } catch { /* ignore */ }
     }
 
     return res.status(200).json({ content: text, parsed });

@@ -21,11 +21,16 @@ export const fmtNum = (n) =>
 /** Try to parse JSON from a potentially messy Claude response */
 export const parseJSON = (raw) => {
   if (!raw) return null;
-  try {
-    return JSON.parse(raw.replace(/```json|```/g, '').trim());
-  } catch {
-    return null;
-  }
+  const cleaned = raw.replace(/```json|```/g, '').trim();
+  // 1. Direct parse
+  try { return JSON.parse(cleaned); } catch { /* next */ }
+  // 2. Extract first JSON array from mixed text
+  const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+  if (arrMatch) try { return JSON.parse(arrMatch[0]); } catch { /* next */ }
+  // 3. Extract first JSON object from mixed text
+  const objMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (objMatch) try { return JSON.parse(objMatch[0]); } catch { /* ignore */ }
+  return null;
 };
 
 /** Shorten large USD values to $X.XM / $X.XK */
