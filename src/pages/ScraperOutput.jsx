@@ -65,7 +65,9 @@ export default function ScraperOutput() {
   const [sortCol, setSortCol] = useState('value_usd_mn');
   const [sortDir, setSortDir] = useState('desc');
   const [years,   setYears]   = useState(() => {
-    const y = new Date().getFullYear(); return `${y-2},${y-1}`;
+    // Comtrade/WITS annual data lags 18-24 months.
+    // Use y-4 and y-3 as reliable defaults (both confirmed published).
+    const y = new Date().getFullYear(); return `${y-4},${y-3}`;
   });
   const timerRef = useRef(null);
 
@@ -221,6 +223,28 @@ export default function ScraperOutput() {
       {/* Done */}
       {phase==='done' && (
         <>
+          {/* Year-lag warning banner */}
+          {(meta?.year_warnings?.length > 0 || (meta?.total === 0 && meta?.errors?.length > 0)) && (
+            <div className="rounded-xl border border-yellow-700 bg-yellow-950/40 p-4 space-y-1">
+              <p className="font-semibold text-yellow-300 text-sm">
+                &#9888; {meta.total === 0 ? 'No data returned' : 'Partial data'} — likely cause: year range too recent
+              </p>
+              {meta.year_warnings?.map((w,i) => (
+                <p key={i} className="text-xs text-yellow-400 font-mono">{w}</p>
+              ))}
+              {meta.total === 0 && (
+                <p className="text-xs text-yellow-500 mt-1">
+                  Trade databases publish annual data with an 18-24 month lag.
+                  Change the <strong>Years</strong> field to{' '}
+                  <button className="underline text-yellow-300" onClick={() => {
+                    const y = new Date().getFullYear();
+                    setYears(`${y-4},${y-3}`);
+                  }}>{new Date().getFullYear()-4},{new Date().getFullYear()-3}</button>
+                  {' '}and run again.
+                </p>
+              )}
+            </div>
+          )}
           {/* Meta bar */}
           {meta && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
@@ -284,7 +308,22 @@ export default function ScraperOutput() {
 
           {/* Results table */}
           {filtered.length===0
-            ? <div className="text-center text-gray-500 py-12">No records match filters.</div>
+            ? (
+              <div className="text-center py-12 space-y-2">
+                <p className="text-gray-400">{records.length === 0 ? 'Scrape returned 0 records.' : 'No records match the current filters.'}</p>
+                {records.length === 0 && (
+                  <p className="text-xs text-gray-600 max-w-md mx-auto">
+                    This usually means the requested years (currently:{' '}
+                    <span className="text-yellow-400 font-mono">{years}</span>) don&apos;t have
+                    published data yet. Try{' '}
+                    <button className="text-teal-400 underline" onClick={() => {
+                      const y = new Date().getFullYear();
+                      setYears(`${y-4},${y-3}`);
+                    }}>{new Date().getFullYear()-4},{new Date().getFullYear()-3}</button>.
+                  </p>
+                )}
+              </div>
+            )
             : (
             <div className="overflow-x-auto rounded-xl border border-gray-800">
               <table className="w-full text-sm text-left">

@@ -90,70 +90,103 @@ function extractHtmlTables(html) {
   return tables;
 }
 
-// ── SOURCE 1: UN Comtrade public preview ──────────────────────────────────
-// Free, no API key. Groups all 10 HS codes into 2 calls (one per year).
-// Returns FOB USD values, partner-level breakdown.
+// ── SOURCE 1: UN Comtrade public preview ─────────────────────────────────
+// Free, no API key. 500-row limit per call — one call per (code, year).
+// India (M49=356) annual export data is reliably present for 2020-2023.
+// Annual data lags 18-24 months: 2024 data may not be published until 2025-26.
 async function fetchComtrade(years) {
   const BASE = 'https://comtradeapi.un.org/public/v1/preview/C/A/HS';
   const records = [];
   const errors  = [];
 
-  // Use unique 6-digit codes (03073910 → 030739, rest already 6-digit)
-  const uniqueCt6 = [...new Set(Object.values(HS).map(m => m.ct6))];
-  const cmdCode   = uniqueCt6.join(',');
+  // Build one task per (HS code, year) — batching all codes together risks
+  // hitting the 500-row cap and silently dropping partners.
+  const tasks = [];
+  for (const [itcCode, meta] of Object.entries(HS)) {
+    for (const year of years) {
+      tasks.push({ itcCode, meta, year, ct6: meta.ct6 });
+    }
+  }
 
-  for (const year of years) {
-    const url = `${BASE}?reporterCode=${INDIA_M49}&cmdCode=${cmdCode}&flowCode=X&period=${year}&includeDesc=true`;
-    try {
-      const resp = await withTimeout(fetch(url, { headers: REQ_HEADERS }));
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const json = await resp.json();
-
-      for (const row of (json.data || [])) {
-        const partner = (row.partnerDesc || row.partner2Desc || '').toUpperCase().trim();
-        if (!partner || ['WORLD', '0', 'ALL'].includes(partner)) continue;
-
-        // Map ct6 back to ITC-HS code (03073910 for 030739, others are identical)
-        const ct6Reported = String(row.cmdCode || '').padStart(6, '0');
-        const hsCode = Object.keys(HS).find(k => HS[k].ct6 === ct6Reported
-          || k === ct6Reported) || ct6Reported;
-        const meta = HS[hsCode] || { label: ct6Reported, group: 'UNKNOWN', priority: 'MEDIUM' };
-
-        // Preferred quantity: netWeightKg, else altQty in KGM
-        let qty = toFloat(row.netWeightKg);
-        if (!qty && row.altQtyUnitAbbr in ['KGM','KG']) qty = toFloat(row.altQty);
-
-        const valUsd  = toFloat(row.primaryValue || row.TradeValue);
-        records.push({
-          source:       'COMTRADE',
-          hs_code:      hsCode,
-          product:      meta.label,
-          country:      partner,
-          qty_kgs:      qty,
-          value_inr_cr: null,
-          value_usd_mn: valUsd ? valUsd / 1_000_000 : null,
-          usd_per_kg:   (qty && valUsd) ? valUsd / qty : null,
-          usd_per_mt:   (qty && valUsd) ? (valUsd / qty) * 1000 : null,
-          period:       String(year),
-          type:         'EXPORT',
-          group:        meta.group,
-          priority:     meta.priority,
-          notes:        '',
-          scraped_at:   nowISO(),
-        });
+  // Run in small parallel batches to avoid rate-limiting.
+  const BATCH = 4;
+  for (let i = 0; i < tasks.length; i += BATCH) {
+    const batch = tasks.slice(i, i + BATCH);
+    const settled = await Promise.allSettled(
+      batch.map(async ({ itcCode, meta, year, ct6 }) => {
+        // Do NOT add includeDesc=true — not supported by public preview.
+        const url = `${BASE}?reporterCode=${INDIA_M49}&cmdCode=${ct6}&flowCode=X&period=${year}`;
+        const resp = await withTimeout(
+          fetch(url, { headers: REQ_HEADERS }), 12000
+        );
+        if (!resp.ok) {
+          const body = await resp.text().catch(() => '');
+          throw new Error(`HTTP ${resp.status} — ${body.slice(0, 100)}`);
+        }
+        const json = await resp.json();
+        const dataRows = json.data || json.dataset || [];
+        if (dataRows.length === 0) {
+          // Not an error — data may not yet be published for this year.
+          return { rows: [], ct6, year, empty: true };
+        }
+        return { rows: parseComtradeRows(dataRows, itcCode, meta, year), ct6, year, empty: false };
+      })
+    );
+    for (let j = 0; j < settled.length; j++) {
+      const r = settled[j];
+      const t = batch[j];
+      if (r.status === 'fulfilled') {
+        records.push(...r.value.rows);
+        if (r.value.empty) {
+          errors.push(`COMTRADE/${t.ct6}/${t.year}: 0 rows — annual data may not be published yet (Comtrade lags 18-24 months)`);
+        }
+      } else {
+        errors.push(`COMTRADE/${t.ct6}/${t.year}: ${r.reason?.message}`);
       }
-    } catch (e) {
-      errors.push(`COMTRADE/${year}: ${e.message}`);
     }
   }
   return { records, errors, source: 'COMTRADE' };
 }
 
-// ── SOURCE 2: WITS World Bank (SDMX REST) ────────────────────────────────
-// Free, no key. Annual data. Returns export values.
-// XPRT-VAL = export value (USD). Called per HS code per year in parallel.
+function parseComtradeRows(dataRows, itcCode, meta, year) {
+  const out = [];
+  for (const row of dataRows) {
+    // Skip world/aggregate rows
+    const partnerCode = String(row.partnerCode ?? row.partner2Code ?? '');
+    const partner     = (row.partnerDesc || row.partner2Desc || '').toUpperCase().trim();
+    if (partnerCode === '0' || !partner ||
+        ['WORLD','ALL','AREAS NES','NOT SPECIFIED'].includes(partner)) continue;
+
+    const qty    = toFloat(row.netWeightKg ?? row.altQty);
+    const valUsd = toFloat(row.primaryValue ?? row.TradeValue ?? row.fobvalue);
+
+    out.push({
+      source:       'COMTRADE',
+      hs_code:      itcCode,
+      product:      meta.label,
+      country:      partner,
+      qty_kgs:      qty,
+      value_inr_cr: null,
+      value_usd_mn: valUsd != null ? valUsd / 1_000_000 : null,
+      usd_per_kg:   (qty && valUsd) ? valUsd / qty : null,
+      usd_per_mt:   (qty && valUsd) ? (valUsd / qty) * 1000 : null,
+      period:       String(year),
+      type:         'EXPORT',
+      group:        meta.group,
+      priority:     meta.priority,
+      notes:        '',
+      scraped_at:   nowISO(),
+    });
+  }
+  return out;
+}
+
+// ── SOURCE 2: WITS World Bank ─────────────────────────────────────────────
+// World Bank trade stats — two URL strategies tried in order:
+//   1. WITS REST JSON  (newer endpoint, returns JSON directly)
+//   2. WITS SDMX XML   (original endpoint, parsed with regex)
+// Data lags similar to Comtrade. Latest reliable: 2021-2023.
 async function fetchWITS(years) {
-  const BASE = 'https://wits.worldbank.org/API/V1/SDMX/V21/datasource/tradestats-trade';
   const records = [];
   const errors  = [];
 
@@ -164,66 +197,86 @@ async function fetchWITS(years) {
     }
   }
 
-  // Run in parallel (WITS is stateless, handles concurrent well)
-  const results = await Promise.allSettled(
-    tasks.map(async ({ itcCode, meta, year, ct6 }) => {
-      const url = `${BASE}/reporter/${INDIA_ISO3}/year/${year}/partner/ALL/product/${ct6}/indicator/XPRT-VAL`;
-      const resp = await withTimeout(fetch(url, { headers: { ...REQ_HEADERS, Accept: 'application/xml' } }));
-      if (resp.status === 404) return []; // no data for this period
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const xml = await resp.text();
-      return parseWitsSDMX(xml, itcCode, meta, year);
-    })
-  );
+  const BATCH = 4;
+  for (let i = 0; i < tasks.length; i += BATCH) {
+    const batch = tasks.slice(i, i + BATCH);
+    const settled = await Promise.allSettled(
+      batch.map(async ({ itcCode, meta, year, ct6 }) => {
+        // Strategy 1: WITS REST JSON endpoint
+        const jsonUrl = `https://wits.worldbank.org/API/V1/wits/datasource/tradestats-trade` +
+          `/reporter/${INDIA_ISO3}/year/${year}/partner/ALL/product/${ct6}/indicator/XPRT-VAL/?format=json`;
+        let resp = await withTimeout(
+          fetch(jsonUrl, { headers: { ...REQ_HEADERS, Accept: 'application/json' } }), 12000
+        ).catch(() => null);
 
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    if (r.status === 'fulfilled') {
-      records.push(...r.value);
-    } else {
-      const t = tasks[i];
-      errors.push(`WITS/${t.ct6}/${t.year}: ${r.reason?.message || 'failed'}`);
+        if (resp && resp.ok) {
+          const json = await resp.json().catch(() => null);
+          if (json) return parseWitsJSON(json, itcCode, meta, year);
+        }
+
+        // Strategy 2: WITS SDMX XML fallback
+        const sdmxUrl = `https://wits.worldbank.org/API/V1/SDMX/V21/datasource/tradestats-trade` +
+          `/reporter/${INDIA_ISO3}/year/${year}/partner/ALL/product/${ct6}/indicator/XPRT-VAL`;
+        resp = await withTimeout(
+          fetch(sdmxUrl, { headers: { ...REQ_HEADERS, Accept: 'application/xml' } }), 12000
+        );
+        if (resp.status === 404 || resp.status === 204) return [];
+        if (!resp.ok) {
+          const body = await resp.text().catch(() => '');
+          throw new Error(`HTTP ${resp.status} — ${body.slice(0, 80)}`);
+        }
+        const xml = await resp.text();
+        return parseWitsSDMX(xml, itcCode, meta, year);
+      })
+    );
+    for (let j = 0; j < settled.length; j++) {
+      const r = settled[j];
+      const t = batch[j];
+      if (r.status === 'fulfilled') records.push(...r.value);
+      else errors.push(`WITS/${t.ct6}/${t.year}: ${r.reason?.message || 'failed'}`);
     }
   }
   return { records, errors, source: 'WITS' };
 }
 
+function parseWitsJSON(json, itcCode, meta, year) {
+  // WITS JSON response: { TradeStats: { trade: [ {TradeFlow,Reporter,Partner,ProductCode,Year,TradeValue}, ... ] } }
+  const trades = json?.TradeStats?.trade || json?.data || [];
+  if (!Array.isArray(trades)) return [];
+  return trades.flatMap(t => {
+    const partner = (t.Partner || t.partner || '').toUpperCase().trim();
+    if (!partner || ['WLD','ALL','000','WORLD'].includes(partner)) return [];
+    const valRaw = t.TradeValue ?? t.tradeValue ?? t.value;
+    const valUsd = toFloat(valRaw);
+    if (!valUsd) return [];
+    return [{
+      source: 'WITS', hs_code: itcCode, product: meta.label,
+      country: partner, qty_kgs: null, value_inr_cr: null,
+      value_usd_mn: valUsd / 1_000_000, usd_per_kg: null, usd_per_mt: null,
+      period: String(year), type: 'EXPORT', group: meta.group,
+      priority: meta.priority, notes: '', scraped_at: nowISO(),
+    }];
+  });
+}
+
 function parseWitsSDMX(xml, itcCode, meta, year) {
   const records = [];
-  // Extract <generic:Value id="PARTNER" value="CHN"/>
-  // and <generic:ObsValue value="1234567"/>
   const seriesRx = /<(?:\w+:)?Series[^>]*>([\s\S]*?)<\/(?:\w+:)?Series>/gi;
   let sm;
   while ((sm = seriesRx.exec(xml)) !== null) {
     const block = sm[1];
-
-    // Partner
-    const partnerM = block.match(/id=["']PARTNER["']\s+value=["']([^"']+)["']/i)
-                  || block.match(/value=["']([A-Z]{3})["']/i);
+    const partnerM = block.match(/id=["']PARTNER["']\s+value=["']([^"']+)["']/i);
     const partner = (partnerM ? partnerM[1] : '').toUpperCase().trim();
-    if (!partner || partner === 'WLD' || partner === '000') continue;
-
-    // Observation value (USD)
+    if (!partner || ['WLD','000','ALL','WORLD'].includes(partner)) continue;
     const obsM = block.match(/ObsValue[^>]+value=["']([^"']+)["']/i);
     const valUsd = obsM ? toFloat(obsM[1]) : null;
     if (!valUsd) continue;
-
     records.push({
-      source:       'WITS',
-      hs_code:      itcCode,
-      product:      meta.label,
-      country:      partner,
-      qty_kgs:      null,
-      value_inr_cr: null,
-      value_usd_mn: valUsd / 1_000_000,
-      usd_per_kg:   null,
-      usd_per_mt:   null,
-      period:       String(year),
-      type:         'EXPORT',
-      group:        meta.group,
-      priority:     meta.priority,
-      notes:        '',
-      scraped_at:   nowISO(),
+      source: 'WITS', hs_code: itcCode, product: meta.label,
+      country: partner, qty_kgs: null, value_inr_cr: null,
+      value_usd_mn: valUsd / 1_000_000, usd_per_kg: null, usd_per_mt: null,
+      period: String(year), type: 'EXPORT', group: meta.group,
+      priority: meta.priority, notes: '', scraped_at: nowISO(),
     });
   }
   return records;
@@ -231,32 +284,66 @@ function parseWitsSDMX(xml, itcCode, meta, year) {
 
 // ── SOURCE 3: TRADESTAT / DGCI&S ─────────────────────────────────────────
 // Indian government portal. Form POST + HTML table parse.
-// Uses full 8-digit ITC-HS for 03073910 (critical — 6-digit loses precision).
-// Returns ₹ values.
+// NOTE: This source often returns errors from cloud/serverless environments
+// because govt sites (NIC-hosted) block AWS/GCP/Vercel egress IPs.
+// Errors here are expected and non-fatal.
 async function fetchTradestat(years) {
-  const BASE = 'https://tradestat.commerce.gov.in/meidb/cntcomq.asp';
+  // Try both known URLs — the site occasionally migrates
+  const URLS = [
+    'https://tradestat.commerce.gov.in/meidb/comqr.asp',
+    'https://tradestat.commerce.gov.in/eidb/comqr.asp',
+    'https://tradestat.commerce.gov.in/meidb/cntcomq.asp',
+  ];
   const records = [];
   const errors  = [];
 
   for (const [itcCode, meta] of Object.entries(HS)) {
     for (const year of years) {
-      try {
-        const body = new URLSearchParams({
-          hs_code: itcCode,   // full ITC-HS — 03073910 for primary, 6-digit for rest
-          SelectYear: String(year),
-          btn_go: 'GO',
-        });
-        const resp = await withTimeout(fetch(BASE, {
-          method: 'POST',
-          headers: { ...REQ_HEADERS, 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: body.toString(),
-        }));
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const html = await resp.text();
-        const parsed = parseTradestatHTML(html, itcCode, meta, year);
-        records.push(...parsed);
-      } catch (e) {
-        errors.push(`TRADESTAT/${itcCode}/${year}: ${e.message}`);
+      let fetched = false;
+      for (const BASE of URLS) {
+        if (fetched) break;
+        try {
+          // Try GET params first (some TRADESTAT pages accept GET)
+          const getUrl = `${BASE}?hs_code=${itcCode}&SelectYear=${year}&type=E&hscode=${itcCode}`;
+          let resp = await withTimeout(
+            fetch(getUrl, { headers: { ...REQ_HEADERS, 'Referer': 'https://tradestat.commerce.gov.in/' } }), 8000
+          ).catch(() => null);
+
+          // Fallback to POST
+          if (!resp || !resp.ok) {
+            const body = new URLSearchParams({
+              hs_code: itcCode,
+              hscode: itcCode,
+              SelectYear: String(year),
+              type: 'E',
+              btn_go: 'GO',
+            });
+            resp = await withTimeout(
+              fetch(BASE, {
+                method: 'POST',
+                headers: { ...REQ_HEADERS, 'Content-Type': 'application/x-www-form-urlencoded',
+                           'Referer': 'https://tradestat.commerce.gov.in/' },
+                body: body.toString(),
+              }), 8000
+            );
+          }
+
+          if (!resp || !resp.ok) {
+            throw new Error(`HTTP ${resp?.status ?? 'no response'}`);
+          }
+          const html = await resp.text();
+          // Check if we got an actual data page (not a redirect or error page)
+          if (html.includes('Access Denied') || html.includes('403') || html.length < 500) {
+            throw new Error(`Blocked or empty response (${html.length} bytes)`);
+          }
+          const parsed = parseTradestatHTML(html, itcCode, meta, year);
+          records.push(...parsed);
+          fetched = true;
+        } catch (e) {
+          if (BASE === URLS[URLS.length - 1]) {
+            errors.push(`TRADESTAT/${itcCode}/${year}: ${e.message} (govt site may block cloud IPs)`);
+          }
+        }
       }
     }
   }
@@ -403,14 +490,33 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Use GET' });
 
   const startMs = Date.now();
-  const now = new Date();
+  const now     = new Date();
+  const curYear = now.getFullYear();
 
-  // Parse query params
+  // ── Year validation ──────────────────────────────────────────────────────
+  // Trade databases (Comtrade, WITS) lag 18-24 months.
+  // Annual data is reliably published ~2 years after the reference year.
+  //   March 2026 → latest reliable annual data = 2023 (maybe 2024).
+  // If the user requests years that are too recent, we warn and cap them.
+  const MAX_SAFE_YEAR = curYear - 2;  // e.g. 2024 when current = 2026
   const q = req.query || {};
 
-  const years = q.years
-    ? q.years.split(',').map(Number).filter(n => n > 2000 && n <= now.getFullYear())
-    : [now.getFullYear() - 1, now.getFullYear() - 2];
+  const requestedYears = q.years
+    ? q.years.split(',').map(Number).filter(n => n > 2010 && n <= curYear)
+    : [MAX_SAFE_YEAR - 1, MAX_SAFE_YEAR];  // default: e.g. 2023, 2024
+
+  // Separate safe years (likely have data) from future/very recent years
+  const safeYears   = requestedYears.filter(y => y <= MAX_SAFE_YEAR);
+  const futureYears = requestedYears.filter(y => y > MAX_SAFE_YEAR);
+
+  // Always run with at least the last 2 safe years
+  const years = safeYears.length > 0
+    ? safeYears
+    : [MAX_SAFE_YEAR - 1, MAX_SAFE_YEAR];
+
+  const yearWarnings = futureYears.length > 0
+    ? [`Years ${futureYears.join(', ')} skipped — Comtrade/WITS annual data is not yet published for years within 24 months of today. Latest safe year: ${MAX_SAFE_YEAR}.`]
+    : [];
 
   const requestedSources = q.sources
     ? q.sources.toLowerCase().split(',')
@@ -455,7 +561,8 @@ export default async function handler(req, res) {
       total:         allRecords.length,
       years,
       sources:       sourceMeta,
-      errors:        allErrors,
+      errors:        [...yearWarnings, ...allErrors],
+      year_warnings: yearWarnings,
       duration_ms:   Date.now() - startMs,
       timestamp:     nowISO(),
       primary_code:  '03073910',
