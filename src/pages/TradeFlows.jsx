@@ -57,6 +57,20 @@ function PriceCell({ value, weight, color }) {
   );
 }
 
+// Split rows by unit price threshold (e.g. HAp vs bulk DCP)
+function splitRows(rows, thresholdPerKg) {
+  const high = [];
+  const low = [];
+  for (const r of rows) {
+    if (r.weight > 0 && r.value / r.weight >= thresholdPerKg) {
+      high.push(r);
+    } else {
+      low.push(r);
+    }
+  }
+  return { high, low };
+}
+
 export default function TradeFlows() {
   const { tradeData, setTradeData, loading, setLoading, addLog } = useApp();
   const [fetchMode, setFetchMode] = useState('full');
@@ -292,30 +306,59 @@ export default function TradeFlows() {
     { key: 'unitPrice', label: '$/MT · $/kg', render: (r) => <PriceCell value={r.value} weight={r.weight} color={hs.color} /> },
   ];
 
-  // ── Global summary per HS code ──
+  // ── Global summary per HS code (with split support) ──
   function buildGlobalSummary() {
     if (!tradeData?.markets) return {};
     const summary = {};
+
+    function summarizeRows(rows, code) {
+      const totalVal = rows.reduce((s, r) => s + (r.value || 0), 0);
+      const totalWt = rows.reduce((s, r) => s + (r.weight || 0), 0);
+      const indiaRow = rows.find((r) => r.partnerCode === '699');
+      return {
+        totalValue: totalVal, totalWeight: totalWt,
+        avgPriceMT: totalWt > 0 ? totalVal / (totalWt / 1000) : null,
+        avgPriceKg: totalWt > 0 ? totalVal / totalWt : null,
+        topSupplier: rows[0]?.partner || '—',
+        supplierCount: rows.length,
+        indiaValue: indiaRow?.value || 0,
+        indiaShare: indiaRow ? ((indiaRow.value / totalVal) * 100).toFixed(1) + '%' : '—',
+      };
+    }
+
     for (const code of HS_CODE_LIST) {
+      const hs = HS_CODES[code];
       summary[code] = [];
+
+      // If this code has a split config, also build split summaries
+      if (hs.split) {
+        summary[code + '_high'] = [];
+        summary[code + '_low'] = [];
+      }
+
       for (const market of IMPORT_MARKETS) {
         const rows = tradeData.markets[market.code]?.[code];
         if (!rows?.length) continue;
-        const totalVal = rows.reduce((s, r) => s + (r.value || 0), 0);
-        const totalWt = rows.reduce((s, r) => s + (r.weight || 0), 0);
-        const indiaRow = rows.find((r) => r.partnerCode === '699');
-        summary[code].push({
-          market: market.name, flag: market.flag, marketCode: market.code,
-          totalValue: totalVal, totalWeight: totalWt,
-          avgPriceMT: totalWt > 0 ? totalVal / (totalWt / 1000) : null,
-          avgPriceKg: totalWt > 0 ? totalVal / totalWt : null,
-          topSupplier: rows[0]?.partner || '—',
-          supplierCount: rows.length,
-          indiaValue: indiaRow?.value || 0,
-          indiaShare: indiaRow ? ((indiaRow.value / totalVal) * 100).toFixed(1) + '%' : '—',
-        });
+
+        const base = { market: market.name, flag: market.flag, marketCode: market.code };
+        summary[code].push({ ...base, ...summarizeRows(rows, code) });
+
+        if (hs.split) {
+          const { high, low } = splitRows(rows, hs.split.thresholdPerKg);
+          if (high.length > 0) {
+            summary[code + '_high'].push({ ...base, ...summarizeRows(high, code) });
+          }
+          if (low.length > 0) {
+            summary[code + '_low'].push({ ...base, ...summarizeRows(low, code) });
+          }
+        }
       }
+
       summary[code].sort((a, b) => b.totalValue - a.totalValue);
+      if (hs.split) {
+        summary[code + '_high'].sort((a, b) => b.totalValue - a.totalValue);
+        summary[code + '_low'].sort((a, b) => b.totalValue - a.totalValue);
+      }
     }
     return summary;
   }
@@ -418,17 +461,11 @@ export default function TradeFlows() {
               if (!rows?.length) return null;
               const hs = HS_CODES[code];
               const grandTotal = rows.reduce((s, r) => s + r.totalValue, 0);
-              return (
-                <div key={code} className="card mb-3" style={{ borderColor: hs.color + '33' }}>
-                  <div className="card-header flex justify-between items-center" style={{ backgroundColor: hs.color + '11', borderColor: hs.color + '22' }}>
-                    <span><span style={{ color: hs.color }}>HS {code}</span> · {hs.name}</span>
-                    <span className="text-slate-400">Global Total: {fmtUSD(grandTotal)}</span>
-                  </div>
-                  {hs.note && (
-                    <div className="px-3 py-1.5 text-[10px] text-amber-400/80 bg-amber-500/5 border-b border-slate-700/30">
-                      ℹ {hs.note}
-                    </div>
-                  )}
+
+              // Render a summary table (reused for split views)
+              const renderSummaryTable = (tableRows, accentColor, totalOverride) => {
+                const gt = totalOverride ?? tableRows.reduce((s, r) => s + r.totalValue, 0);
+                return (
                   <div className="overflow-x-auto">
                     <table className="w-full text-[11px]">
                       <thead>
@@ -444,8 +481,8 @@ export default function TradeFlows() {
                         </tr>
                       </thead>
                       <tbody>
-                        {rows.map((r, i) => {
-                          const pct = grandTotal > 0 ? (r.totalValue / grandTotal) * 100 : 0;
+                        {tableRows.map((r, i) => {
+                          const pct = gt > 0 ? (r.totalValue / gt) * 100 : 0;
                           return (
                             <tr key={r.marketCode} className="border-b border-slate-800/50 hover:bg-slate-800/50">
                               <td className="px-3 py-2 text-slate-500">{i + 1}</td>
@@ -455,7 +492,7 @@ export default function TradeFlows() {
                               <td className="px-3 py-2">
                                 {r.avgPriceMT ? (
                                   <div>
-                                    <span className="font-mono font-semibold" style={{ color: hs.color }}>{fmtPrice(r.avgPriceMT)}/MT</span>
+                                    <span className="font-mono font-semibold" style={{ color: accentColor }}>{fmtPrice(r.avgPriceMT)}/MT</span>
                                     <div className="text-[9px] text-slate-500 font-mono">${r.avgPriceKg?.toFixed(2)}/kg</div>
                                   </div>
                                 ) : '—'}
@@ -469,7 +506,7 @@ export default function TradeFlows() {
                               <td className="px-3 py-2">
                                 <div className="flex items-center gap-1.5">
                                   <div className="w-14 h-1.5 bg-slate-900 rounded-full overflow-hidden">
-                                    <div className="h-full rounded-full" style={{ width: `${Math.min(100, pct)}%`, backgroundColor: hs.color }} />
+                                    <div className="h-full rounded-full" style={{ width: `${Math.min(100, pct)}%`, backgroundColor: accentColor }} />
                                   </div>
                                   <span className="text-[9px] text-slate-400">{pct.toFixed(1)}%</span>
                                 </div>
@@ -480,6 +517,80 @@ export default function TradeFlows() {
                       </tbody>
                     </table>
                   </div>
+                );
+              };
+
+              return (
+                <div key={code}>
+                  {/* Main combined card */}
+                  <div className="card mb-2" style={{ borderColor: hs.color + '33' }}>
+                    <div className="card-header flex justify-between items-center" style={{ backgroundColor: hs.color + '11', borderColor: hs.color + '22' }}>
+                      <span><span style={{ color: hs.color }}>HS {code}</span> · {hs.name}</span>
+                      <span className="text-slate-400">Global Total: {fmtUSD(grandTotal)}</span>
+                    </div>
+                    {hs.note && (
+                      <div className="px-3 py-1.5 text-[10px] text-amber-400/80 bg-amber-500/5 border-b border-slate-700/30">
+                        ℹ {hs.note}
+                      </div>
+                    )}
+                    {renderSummaryTable(rows, hs.color)}
+                  </div>
+
+                  {/* Split cards for HAp vs DCP */}
+                  {hs.split && (() => {
+                    const highRows = globalSummary[code + '_high'] || [];
+                    const lowRows = globalSummary[code + '_low'] || [];
+                    const highTotal = highRows.reduce((s, r) => s + r.totalValue, 0);
+                    const lowTotal = lowRows.reduce((s, r) => s + r.totalValue, 0);
+                    const highWeight = highRows.reduce((s, r) => s + r.totalWeight, 0);
+                    const lowWeight = lowRows.reduce((s, r) => s + r.totalWeight, 0);
+                    const pctHigh = grandTotal > 0 ? ((highTotal / grandTotal) * 100).toFixed(1) : '0.0';
+                    return (
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 mb-3">
+                        {/* HAp / Specialty */}
+                        <div className="card" style={{ borderColor: hs.split.highColor + '44' }}>
+                          <div className="card-header flex justify-between items-center" style={{ backgroundColor: hs.split.highColor + '15', borderColor: hs.split.highColor + '33' }}>
+                            <span className="text-[11px]">
+                              <span className="font-bold" style={{ color: hs.split.highColor }}>⬆ {hs.split.highLabel}</span>
+                              <span className="text-slate-500 ml-2">({'>'}{hs.split.thresholdPerKg} $/kg)</span>
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              {fmtUSDShort(highTotal)} · {fmtMT(highWeight * 1000)} · <span style={{ color: hs.split.highColor }}>{pctHigh}%</span> of total
+                            </span>
+                          </div>
+                          {hs.split.highNote && (
+                            <div className="px-3 py-1 text-[9px] text-purple-300/70 bg-purple-500/5 border-b border-slate-700/30">
+                              {hs.split.highNote}
+                            </div>
+                          )}
+                          {highRows.length > 0 ? renderSummaryTable(highRows, hs.split.highColor) : (
+                            <div className="p-3 text-[10px] text-slate-500 italic">No high-value shipments detected in selected markets</div>
+                          )}
+                        </div>
+
+                        {/* Bulk DCP */}
+                        <div className="card" style={{ borderColor: hs.split.lowColor + '33' }}>
+                          <div className="card-header flex justify-between items-center" style={{ backgroundColor: hs.split.lowColor + '11', borderColor: hs.split.lowColor + '22' }}>
+                            <span className="text-[11px]">
+                              <span className="font-bold" style={{ color: hs.split.lowColor }}>⬇ {hs.split.lowLabel}</span>
+                              <span className="text-slate-500 ml-2">(≤{hs.split.thresholdPerKg} $/kg)</span>
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              {fmtUSDShort(lowTotal)} · {fmtMT(lowWeight * 1000)}
+                            </span>
+                          </div>
+                          {hs.split.lowNote && (
+                            <div className="px-3 py-1 text-[9px] text-slate-400/70 bg-slate-500/5 border-b border-slate-700/30">
+                              {hs.split.lowNote}
+                            </div>
+                          )}
+                          {lowRows.length > 0 ? renderSummaryTable(lowRows, hs.split.lowColor) : (
+                            <div className="p-3 text-[10px] text-slate-500 italic">No bulk shipments detected</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -505,17 +616,51 @@ export default function TradeFlows() {
                     const hs = HS_CODES[code];
                     const total = rows.reduce((s, r) => s + (r.value || 0), 0);
                     return (
-                      <div key={code} className="card mb-3" style={{ borderColor: hs.color + '33' }}>
-                        <div className="card-header flex justify-between items-center" style={{ backgroundColor: hs.color + '11', borderColor: hs.color + '22' }}>
-                          <span><span style={{ color: hs.color }}>HS {code}</span> · {hs.name}</span>
-                          <span className="text-slate-400">Total: {fmtUSD(total)}</span>
-                        </div>
-                        {hs.note && (
-                          <div className="px-3 py-1.5 text-[10px] text-amber-400/80 bg-amber-500/5 border-b border-slate-700/30">
-                            ℹ {hs.note}
+                      <div key={code}>
+                        <div className="card mb-2" style={{ borderColor: hs.color + '33' }}>
+                          <div className="card-header flex justify-between items-center" style={{ backgroundColor: hs.color + '11', borderColor: hs.color + '22' }}>
+                            <span><span style={{ color: hs.color }}>HS {code}</span> · {hs.name}</span>
+                            <span className="text-slate-400">Total: {fmtUSD(total)}</span>
                           </div>
-                        )}
-                        <DataTable columns={makeColumns(hs, total)} data={rows.slice(0, 10)} />
+                          {hs.note && (
+                            <div className="px-3 py-1.5 text-[10px] text-amber-400/80 bg-amber-500/5 border-b border-slate-700/30">
+                              ℹ {hs.note}
+                            </div>
+                          )}
+                          <DataTable columns={makeColumns(hs, total)} data={rows.slice(0, 10)} />
+                        </div>
+
+                        {/* Split cards for this market */}
+                        {hs.split && (() => {
+                          const { high, low } = splitRows(rows, hs.split.thresholdPerKg);
+                          if (!high.length && !low.length) return null;
+                          const highTotal = high.reduce((s, r) => s + (r.value || 0), 0);
+                          const lowTotal = low.reduce((s, r) => s + (r.value || 0), 0);
+                          const fakeHsHigh = { ...hs, color: hs.split.highColor, shortName: hs.split.highShortName };
+                          const fakeHsLow = { ...hs, color: hs.split.lowColor, shortName: hs.split.lowShortName };
+                          return (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 mb-3">
+                              <div className="card" style={{ borderColor: hs.split.highColor + '44' }}>
+                                <div className="card-header text-[11px] flex justify-between items-center" style={{ backgroundColor: hs.split.highColor + '15', borderColor: hs.split.highColor + '33' }}>
+                                  <span style={{ color: hs.split.highColor }}>⬆ {hs.split.highLabel}</span>
+                                  <span className="text-slate-400">{fmtUSD(highTotal)}</span>
+                                </div>
+                                {high.length > 0
+                                  ? <DataTable columns={makeColumns(fakeHsHigh, highTotal)} data={high.slice(0, 10)} />
+                                  : <div className="p-3 text-[10px] text-slate-500 italic">No high-value shipments</div>}
+                              </div>
+                              <div className="card" style={{ borderColor: hs.split.lowColor + '33' }}>
+                                <div className="card-header text-[11px] flex justify-between items-center" style={{ backgroundColor: hs.split.lowColor + '11', borderColor: hs.split.lowColor + '22' }}>
+                                  <span style={{ color: hs.split.lowColor }}>⬇ {hs.split.lowLabel}</span>
+                                  <span className="text-slate-400">{fmtUSD(lowTotal)}</span>
+                                </div>
+                                {low.length > 0
+                                  ? <DataTable columns={makeColumns(fakeHsLow, lowTotal)} data={low.slice(0, 10)} />
+                                  : <div className="p-3 text-[10px] text-slate-500 italic">No bulk shipments</div>}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}
@@ -532,12 +677,46 @@ export default function TradeFlows() {
               const hs = HS_CODES[code];
               const total = rows.reduce((s, r) => s + (r.value || 0), 0);
               return (
-                <div key={code} className="card mb-3" style={{ borderColor: hs.color + '33' }}>
-                  <div className="card-header flex justify-between items-center" style={{ backgroundColor: '#05966911', borderColor: '#05966922' }}>
-                    <span><span style={{ color: hs.color }}>HS {code}</span> · {hs.shortName} — India Exports</span>
-                    <span className="text-slate-400">Total: {fmtUSD(total)}</span>
+                <div key={code}>
+                  <div className="card mb-2" style={{ borderColor: hs.color + '33' }}>
+                    <div className="card-header flex justify-between items-center" style={{ backgroundColor: '#05966911', borderColor: '#05966922' }}>
+                      <span><span style={{ color: hs.color }}>HS {code}</span> · {hs.shortName} — India Exports</span>
+                      <span className="text-slate-400">Total: {fmtUSD(total)}</span>
+                    </div>
+                    <DataTable columns={exportColumns(hs)} data={rows.slice(0, 10)} />
                   </div>
-                  <DataTable columns={exportColumns(hs)} data={rows.slice(0, 10)} />
+
+                  {/* Split cards for India exports */}
+                  {hs.split && (() => {
+                    const { high, low } = splitRows(rows, hs.split.thresholdPerKg);
+                    if (!high.length && !low.length) return null;
+                    const highTotal = high.reduce((s, r) => s + (r.value || 0), 0);
+                    const lowTotal = low.reduce((s, r) => s + (r.value || 0), 0);
+                    const fakeHsHigh = { ...hs, color: hs.split.highColor, shortName: hs.split.highShortName };
+                    const fakeHsLow = { ...hs, color: hs.split.lowColor, shortName: hs.split.lowShortName };
+                    return (
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 mb-3">
+                        <div className="card" style={{ borderColor: hs.split.highColor + '44' }}>
+                          <div className="card-header text-[11px] flex justify-between items-center" style={{ backgroundColor: hs.split.highColor + '15', borderColor: hs.split.highColor + '33' }}>
+                            <span style={{ color: hs.split.highColor }}>⬆ {hs.split.highLabel} — India Exports</span>
+                            <span className="text-slate-400">{fmtUSD(highTotal)}</span>
+                          </div>
+                          {high.length > 0
+                            ? <DataTable columns={exportColumns(fakeHsHigh)} data={high.slice(0, 10)} />
+                            : <div className="p-3 text-[10px] text-slate-500 italic">No high-value HAp exports detected</div>}
+                        </div>
+                        <div className="card" style={{ borderColor: hs.split.lowColor + '33' }}>
+                          <div className="card-header text-[11px] flex justify-between items-center" style={{ backgroundColor: hs.split.lowColor + '11', borderColor: hs.split.lowColor + '22' }}>
+                            <span style={{ color: hs.split.lowColor }}>⬇ {hs.split.lowLabel} — India Exports</span>
+                            <span className="text-slate-400">{fmtUSD(lowTotal)}</span>
+                          </div>
+                          {low.length > 0
+                            ? <DataTable columns={exportColumns(fakeHsLow)} data={low.slice(0, 10)} />
+                            : <div className="p-3 text-[10px] text-slate-500 italic">No bulk exports detected</div>}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}

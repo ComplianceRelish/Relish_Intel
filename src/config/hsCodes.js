@@ -15,7 +15,19 @@ export const HS_CODES = {
     shortName: 'Ca-Phosphates',
     color: '#7c3aed',
     cat: 'chem',
-    note: '⚠ Bulk of trade is cheap DCP/TCP (animal feed, $500–900/MT). HAp (medical/nano) is $50–500/kg but a tiny fraction of volume — NOT reflected in avg price.',
+    note: 'Bulk of trade is cheap DCP/TCP (animal feed, $500–900/MT). HAp (medical/nano) is $50–500/kg but a tiny fraction of volume.',
+    // Price-split: separate high-value (HAp) from bulk (DCP/TCP) shipments
+    split: {
+      thresholdPerKg: 3, // $/kg cutoff — above = HAp/specialty, below = bulk DCP
+      highLabel: 'HAp / Specialty Ca-Phosphates',
+      highShortName: 'HAp (est.)',
+      highColor: '#a855f7',
+      highNote: 'Estimated HAp/specialty: shipments where declared value > $3/kg ($3,000/MT). Includes food-grade TCP, pharma HAp, nano-HAp.',
+      lowLabel: 'Bulk DCP/TCP (Animal Feed)',
+      lowShortName: 'Bulk DCP',
+      lowColor: '#6d28d9',
+      lowNote: 'Bulk calcium phosphates: DCP/MCP for animal feed, fertilizer-grade TCP. Declared value ≤ $3/kg.',
+    },
   },
   '282510': {
     name: 'Calcium Oxide (CaO/Quicklime)',
