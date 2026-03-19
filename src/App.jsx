@@ -8,6 +8,7 @@ import Pricing from './pages/Pricing';
 import Buyers from './pages/Buyers';
 import Specs from './pages/Specs';
 import DataSources from './pages/DataSources';
+import ScraperOutput from './pages/ScraperOutput';
 
 const TABS = [
   { path: '/trade', label: 'Trade Flows', icon: '⛴' },
@@ -15,6 +16,7 @@ const TABS = [
   { path: '/buyers', label: 'Buyers', icon: '🏭' },
   { path: '/specs', label: 'Specs', icon: '🔬' },
   { path: '/sources', label: 'Data Sources', icon: '⚙️' },
+  { path: '/scraper', label: 'Scraper Output', icon: '🗂️' },
 ];
 
 export default function App() {
@@ -69,6 +71,7 @@ export default function App() {
             <Route path="/buyers" element={<Buyers />} />
             <Route path="/specs" element={<Specs />} />
             <Route path="/sources" element={<DataSources />} />
+            <Route path="/scraper" element={<ScraperOutput />} />
           </Routes>
         </main>
         <ActivityLog />
