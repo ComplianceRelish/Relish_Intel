@@ -40,7 +40,7 @@ export default async function handler(req, res) {
     const headers = {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
-      'anthropic-version': '2025-03-05',
+      'anthropic-version': '2023-06-01',
     };
 
     // First attempt: with web search tool
