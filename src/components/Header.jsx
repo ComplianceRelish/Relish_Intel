@@ -11,9 +11,11 @@ export default function Header() {
     <header className="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 border-b border-indigo-500/30 px-6 py-5">
       <div className="flex items-center gap-4 mb-2">
         {/* Logo */}
-        <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-xl font-black text-white shrink-0">
-          R
-        </div>
+        <img
+          src="/android-icon-96x96.png"
+          alt="Relish"
+          className="w-10 h-10 rounded-lg shrink-0"
+        />
         <div className="flex-1">
           <h1 className="text-xl font-bold text-white tracking-tight">
             Relish Market Intelligence

@@ -35,9 +35,11 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-3xl font-black text-white mx-auto mb-4 shadow-lg shadow-indigo-500/30">
-            R
-          </div>
+          <img
+            src="/android-icon-192x192.png"
+            alt="Relish"
+            className="w-16 h-16 rounded-2xl mx-auto mb-4 shadow-lg shadow-indigo-500/30"
+          />
           <h1 className="text-2xl font-bold text-white tracking-tight">
             Relish Market Intelligence
           </h1>
