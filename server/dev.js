@@ -13,6 +13,7 @@ import claudeHandler from '../api/claude.js';
 import comtradeHandler from '../api/comtrade.js';
 import comtradeRefHandler from '../api/comtrade-ref.js';
 import healthHandler from '../api/health.js';
+import scrapeHandler from '../api/scrape.js';
 
 const app = express();
 
@@ -31,6 +32,7 @@ app.all('/api/claude', (req, res) => claudeHandler(req, res));
 app.all('/api/comtrade', (req, res) => comtradeHandler(req, res));
 app.all('/api/comtrade-ref', (req, res) => comtradeRefHandler(req, res));
 app.all('/api/health', (req, res) => healthHandler(req, res));
+app.all('/api/scrape', (req, res) => scrapeHandler(req, res));
 
 // Catch-all for unknown API routes
 app.all('/api/*', (_req, res) => {
