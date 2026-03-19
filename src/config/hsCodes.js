@@ -18,15 +18,15 @@ export const HS_CODES = {
     note: 'Bulk of trade is cheap DCP/TCP (animal feed, $500–900/MT). HAp (medical/nano) is $50–500/kg but a tiny fraction of volume.',
     // Price-split: separate high-value (HAp) from bulk (DCP/TCP) shipments
     split: {
-      thresholdPerKg: 3, // $/kg cutoff — above = HAp/specialty, below = bulk DCP
+      thresholdPerKg: 20, // $/kg cutoff — HAp/specialty starts well above $20/kg; bulk DCP is $0.50–3/kg
       highLabel: 'HAp / Specialty Ca-Phosphates',
       highShortName: 'HAp (est.)',
       highColor: '#a855f7',
-      highNote: 'Estimated HAp/specialty: shipments where declared value > $3/kg ($3,000/MT). Includes food-grade TCP, pharma HAp, nano-HAp.',
-      lowLabel: 'Bulk DCP/TCP (Animal Feed)',
-      lowShortName: 'Bulk DCP',
+      highNote: 'Estimated HAp/specialty: shipments where declared value > $20/kg ($20,000/MT). True HAp trades at $50–500/kg. Includes pharma HAp, nano-HAp, food-grade TCP.',
+      lowLabel: 'Bulk DCP/TCP (Animal Feed & Fertilizer)',
+      lowShortName: 'Bulk DCP/TCP',
       lowColor: '#6d28d9',
-      lowNote: 'Bulk calcium phosphates: DCP/MCP for animal feed, fertilizer-grade TCP. Declared value ≤ $3/kg.',
+      lowNote: 'Bulk calcium phosphates: DCP/MCP for animal feed, fertilizer-grade TCP. Declared value ≤ $20/kg.',
     },
   },
   '282510': {
